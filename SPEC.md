@@ -141,7 +141,11 @@ olympics/
 │   │   ├── poker/
 │   │   ├── rob-the-nest/
 │   │   ├── bomberman/
-│   │   └── rts/
+│   │   ├── rts/
+│   │   ├── tron/
+│   │   ├── artillery/
+│   │   ├── prisoners-dilemma/
+│   │   └── snake/
 │   └── shared/             # Shared types, constants, bot API type definitions
 │       └── package.json
 ├── package.json            # Workspace root
@@ -552,6 +556,194 @@ A minimal RTS on a small grid. Each player starts with a base and a few worker u
 ```
 
 **Default action:** All units stay, no production.
+
+---
+
+### Tron / Lightcycles
+
+**Mode:** Tick-based (150ms ticks)
+**Players:** 2-6
+
+Each player controls a lightcycle on a grid that leaves a permanent trail behind it. Every tick, each bot chooses a direction. Colliding with any trail (yours or an opponent's) or the arena wall kills you. Last player alive wins. If two players collide head-on in the same tick, both die.
+
+The arena is a fixed-size grid (e.g. 80x60). All players start at evenly-spaced positions along the edges, facing inward.
+
+**Visible state:**
+```typescript
+{
+  tick: number;
+  gridSize: { width: number; height: number };
+  myPosition: { x: number; y: number };
+  myDirection: "up" | "down" | "left" | "right";
+  alive: boolean;
+  players: {
+    id: string;
+    name: string;
+    x: number;
+    y: number;
+    direction: "up" | "down" | "left" | "right";
+    alive: boolean;
+  }[];
+  // The trail grid: each cell is null (empty) or a player ID
+  trails: (string | null)[][];
+}
+```
+
+**Actions:**
+```typescript
+{ action: "direction", direction: "up" | "down" | "left" | "right" }
+{ action: "straight" }   // Continue in current direction
+```
+
+Attempting to reverse direction (e.g. turning "left" when heading "right") is treated as `"straight"` — you can't do a 180 into your own trail.
+
+**Default action:** `{ action: "straight" }`
+
+---
+
+### Artillery
+
+**Mode:** Turn-based
+**Players:** 2-6
+
+Players are positioned on a destructible 2D terrain. Each turn, the active player sets a firing angle and power. The projectile follows a ballistic arc (affected by wind) and explodes on impact, destroying terrain and damaging any player caught in the blast radius. Players have HP; reaching 0 eliminates them. Last player standing wins. If all remaining players are eliminated in the same turn (e.g. from collateral damage), the player who fired the shot wins.
+
+Wind speed and direction change each round. Terrain is generated randomly at the start of each game.
+
+**Visible state:**
+```typescript
+{
+  round: number;
+  terrain: number[];          // Height map: terrain[x] = y height at column x
+  wind: number;               // Negative = left, positive = right, magnitude = strength
+  myPosition: { x: number; y: number };
+  myHp: number;
+  isMyTurn: boolean;
+  players: {
+    id: string;
+    name: string;
+    x: number;
+    y: number;
+    hp: number;
+    alive: boolean;
+  }[];
+  lastShot?: {                // Result of the previous turn's shot
+    shooterId: string;
+    angle: number;
+    power: number;
+    trajectory: { x: number; y: number }[];   // Sampled points along the arc
+    impact: { x: number; y: number };
+    damage: { playerId: string; amount: number }[];
+  };
+}
+```
+
+**Actions:**
+```typescript
+{
+  action: "fire";
+  angle: number;    // 0-180 degrees, where 90 is straight up
+  power: number;    // 0-100, controls initial velocity
+}
+```
+
+**Default action:** `{ action: "fire", angle: 45, power: 50 }`
+
+---
+
+### Prisoner's Dilemma
+
+**Mode:** Turn-based (simultaneous)
+**Players:** 2-8
+
+A round-robin tournament of the iterated Prisoner's Dilemma. Every pair of players plays a match of N rounds (e.g. 100). Each round, both players simultaneously choose "cooperate" or "defect". Payoffs follow the classic matrix:
+
+|  | Cooperate | Defect |
+|--|-----------|--------|
+| **Cooperate** | 3, 3 | 0, 5 |
+| **Defect** | 5, 0 | 1, 1 |
+
+After all pairs have played, each player's total accumulated score across all matches determines their placement.
+
+The bot receives the full history of the current match so far, allowing for strategies like tit-for-tat, forgiveness, grudge-holding, pattern detection, etc.
+
+**Visible state:**
+```typescript
+{
+  opponent: {
+    id: string;
+    name: string;
+  };
+  roundNumber: number;        // Current round (1-indexed)
+  totalRounds: number;        // How many rounds in this match
+  myHistory: ("cooperate" | "defect")[];        // My past choices this match
+  opponentHistory: ("cooperate" | "defect")[];  // Their past choices this match
+  myScoreThisMatch: number;
+  opponentScoreThisMatch: number;
+  // Overall tournament progress
+  standings: {
+    playerId: string;
+    playerName: string;
+    totalScore: number;
+    matchesPlayed: number;
+  }[];
+}
+```
+
+**Actions:**
+```typescript
+{ action: "cooperate" }
+{ action: "defect" }
+```
+
+**Default action:** `{ action: "cooperate" }`
+
+---
+
+### Multiplayer Snake
+
+**Mode:** Tick-based (200ms ticks)
+**Players:** 2-8
+
+Classic Snake, but multiplayer on a shared grid. Each player controls a snake that grows when it eats food. Colliding with a wall, your own body, or another snake's body kills you. If two snakes collide head-to-head, the shorter one dies (if equal length, both die). Food spawns randomly on the grid. The game ends when one or zero snakes remain, or after a maximum number of ticks.
+
+The arena is a fixed-size grid (e.g. 60x40). Snakes start at length 3, positioned at evenly-spaced locations.
+
+**Visible state:**
+```typescript
+{
+  tick: number;
+  maxTicks: number;
+  gridSize: { width: number; height: number };
+  mySnake: {
+    head: { x: number; y: number };
+    body: { x: number; y: number }[];   // Ordered from head to tail
+    direction: "up" | "down" | "left" | "right";
+    length: number;
+    alive: boolean;
+  };
+  otherSnakes: {
+    id: string;
+    name: string;
+    head: { x: number; y: number };
+    body: { x: number; y: number }[];
+    direction: "up" | "down" | "left" | "right";
+    length: number;
+    alive: boolean;
+  }[];
+  food: { x: number; y: number }[];
+}
+```
+
+**Actions:**
+```typescript
+{ action: "direction", direction: "up" | "down" | "left" | "right" }
+{ action: "straight" }   // Continue in current direction
+```
+
+As with Tron, attempting to reverse into yourself is treated as `"straight"`.
+
+**Default action:** `{ action: "straight" }`
 
 ## Player Identity and Room Creation
 
