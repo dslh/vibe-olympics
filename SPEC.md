@@ -28,42 +28,51 @@ A typical session looks like this:
 **Frontend** — A single-page React app with multiple views:
 - Spectator display (the big screen) — animated game rendering, scores, event feed
 - Lobby — players join, host picks games, everyone sees who's connected
-- Web editor — Monaco-based code editor with a submit button, game state panel, and API docs reference
+- Web editor — AI chat panel front and center, with a Monaco code editor available but secondary. Designed to make the game accessible to non-coders via vibe coding.
 - Admin controls — start/stop games, kick players, advance the olympics
 
 **MCP Server** — A small CLI that each IDE-connected player runs locally. Translates MCP tool calls into game server HTTP API calls. Connects to the player's AI agent via stdio transport.
 
-**Game Modules** — Pluggable game implementations. Each module defines its own state, rules, bot API, tick/turn logic, and rendering configuration.
+**Game Modules** — Pluggable game implementations. Each module defines its own state, rules, bot API, tick/turn logic, rendering engine, and (optionally) sound. A game module is a self-contained package that owns everything about how it plays and how it looks on the big screen.
 
 ### System Diagram
 
-```
- PLAYER MACHINES                          HOST MACHINE
- ──────────────                          ────────────
+```mermaid
+graph TB
+    subgraph Players ["Player Machines"]
+        IDE["IDE + AI Agent<br/>(Claude Code, Cursor, etc.)"]
+        MCP["MCP Server CLI"]
+        Browser["Web Editor<br/>(AI Chat + Monaco)"]
+        BigScreen["Spectator Display<br/>(Big Screen)"]
+    end
 
- ┌──────────────────┐              ┌──────────────────────────────────┐
- │ IDE + AI Agent   │   stdio      │           Game Server            │
- │ (Claude Code,    │◄────────►MCP │                                  │
- │  Cursor, etc.)   │  Server CLI  │  ┌───────┐ ┌─────────────────┐  │
- └──────────────────┘     │        │  │ Lobby │ │  Game Engine    │  │
-                          │ HTTP   │  │Manager│ │                 │  │
-                          ├───────►│  └───────┘ │ ┌─Sandboxed──┐ │  │
-                          │        │            │ │ Player 1   │ │  │
- ┌──────────────────┐     │        │            │ │ Player 2   │ │  │
- │ Browser          │ WebSocket    │            │ │ Player 3   │ │  │
- │ ┌──────────────┐ │◄────┘   ┌──►│            │ └────────────┘ │  │
- │ │ Web Editor + │ │         │   │  └─────────────────┘  │      │  │
- │ │ Monaco       │ │         │   │                       │state │  │
- │ └──────────────┘ │         │   │                       ▼      │  │
- └──────────────────┘         │   │  ┌─────────────────────────┐ │  │
-                              │   │  │ Game Module (plugin)    │ │  │
- ┌──────────────────┐         │   │  │ · state shape           │ │  │
- │ Big Screen       │         │   │  │ · rules & bot API docs  │ │  │
- │ ┌──────────────┐ │         │   │  │ · tick/turn logic       │ │  │
- │ │ Spectator    │◄├─────────┘   │  │ · rendering config      │ │  │
- │ │ Display      │ │  WebSocket  │  └─────────────────────────┘ │  │
- │ └──────────────┘ │             │                               │  │
- └──────────────────┘             └───────────────────────────────┘  │
+    subgraph Server ["Game Server (Host Machine)"]
+        API["HTTP + WebSocket API"]
+        Lobby["Lobby Manager"]
+        Engine["Game Engine"]
+
+        subgraph Sandbox ["Sandboxed Isolates"]
+            P1["Player 1"]
+            P2["Player 2"]
+            P3["Player 3"]
+        end
+
+        subgraph Module ["Game Module (plugin)"]
+            State["State & Rules"]
+            Logic["Tick/Turn Logic"]
+            Renderer["Rendering Engine"]
+            Sound["Sound (optional)"]
+        end
+    end
+
+    IDE <-->|stdio| MCP
+    MCP -->|HTTP| API
+    Browser <-->|WebSocket| API
+    BigScreen <-->|WebSocket| API
+    API --> Lobby
+    API --> Engine
+    Engine --> Sandbox
+    Engine --> Module
 ```
 
 ### Key Flows
@@ -75,8 +84,8 @@ A typical session looks like this:
 
 **Player joins via web:**
 1. Player opens the app in a browser and enters a room code.
-2. The web editor view loads with Monaco, a live game state panel, and the bot API reference.
-3. Player writes code (with or without an AI assistant) and clicks submit.
+2. The web editor view loads with an AI chat panel, game state panel, bot API reference, and a Monaco code editor (which may be collapsed/hidden by default).
+3. Player prompts the AI in the chat panel. The AI reads the game rules and API docs, writes code, and submits it — mirroring the IDE experience but in-browser. Players can also edit code directly if they choose.
 
 **Game loop:**
 1. Host starts a game. Server initializes the game module and creates initial state.
@@ -100,7 +109,7 @@ A typical session looks like this:
 | Real-time | WebSockets (`ws`) | Low-latency state push for spectator view and tick-based games. |
 | Sandboxing | `isolated-vm` | V8 isolates in-process. Fast startup, strict memory and time limits, no filesystem or network access. |
 | Frontend | React + Vite | Standard tooling, fast dev server, good ecosystem. |
-| Game rendering | Pixi.js on HTML5 Canvas | 2D sprite-based rendering covers all planned game types. |
+| Game rendering | Per-game (Pixi.js, Canvas, etc.) | Each game module owns its renderer. More work, better quality. Games may use different rendering approaches. |
 | Web code editor | Monaco Editor | VS Code's editor engine. Syntax highlighting, autocomplete, familiar UX. |
 | MCP SDK | `@modelcontextprotocol/sdk` | Official MCP TypeScript SDK, stdio transport for IDE integration. |
 | Monorepo | npm workspaces | Simple, no extra tooling needed. |
@@ -189,6 +198,17 @@ interface GameModule<TState, TAction, TVisibleState, TRenderState> {
   // --- Defaults ---
   // Action returned when player code throws, times out, or hasn't been submitted yet
   getDefaultAction(state: TState, playerId: string): TAction;
+
+  // --- Rendering ---
+  // Each game provides its own renderer as a React component (or Canvas/Pixi setup).
+  // The spectator display mounts this component and passes it the spectator state.
+  // This allows each game full control over its visual presentation.
+  SpectatorRenderer: ComponentType<{ state: TRenderState }>;
+
+  // --- Sound (optional) ---
+  // Games may provide sound effects and music. If present, the spectator display
+  // will play sounds in response to game events. Sound can be muted by the host.
+  getSoundEvents?(prevState: TState, newState: TState): SoundEvent[];
 }
 ```
 
@@ -533,10 +553,61 @@ A minimal RTS on a small grid. Each player starts with a base and a few worker u
 
 **Default action:** All units stay, no production.
 
+## Player Identity and Room Creation
+
+Identity is kept lightweight. This is a party game, not a platform.
+
+**Joining a room:** Ephemeral. A player picks a display name and enters a room code. No account required. The server issues a short-lived token for the session.
+
+**Creating a room:** Two paths:
+- **Web:** Requires a simple account (email + password or OAuth). This is the only action that requires an account. Prevents abuse of room creation on public-facing servers.
+- **CLI:** The server can be run locally. When started from the command line, a room can be created via a CLI flag or startup prompt, no account needed. This supports the "run it on your own machine" use case.
+
+Persistent identity features (player profiles, cross-session leaderboards, tournament brackets) are explicitly out of scope for the MVP. The server stores nothing after a session ends.
+
+## Web Editor and AI Chat
+
+The web editor exists to make the game accessible to people who don't have an LLM-integrated IDE set up. Its primary audience is non-coders being introduced to vibe coding.
+
+**Layout:**
+- The AI chat panel is the dominant UI element — front and center.
+- The Monaco code editor is secondary. It may be collapsed or hidden by default, available for players who want to see or tweak the code directly.
+- A game state panel shows the current state of the game (live-updating via WebSocket).
+- The bot API reference and game rules are accessible as a sidebar or expandable section.
+
+**AI Integration:**
+- The chat panel connects to an LLM API to provide an agent-like experience in the browser.
+- The AI can read the game rules and bot API docs, write a `play()` function, submit it, observe game state changes, and iterate — all through the chat interface.
+- This mirrors the MCP-connected IDE experience but without requiring any local tooling setup.
+- API key management: the server operator configures an LLM API key server-side. Players using the web editor don't need their own API key. This keeps the barrier to entry minimal but means the host bears the API cost.
+
+## Replay System (Future)
+
+Not in the MVP, but the architecture should not preclude it.
+
+**Design considerations for future replay support:**
+- The game engine should emit a log of all state transitions (tick number, actions received, resulting state delta or full state snapshot).
+- Player code submissions should be recorded with timestamps, forming a history of each player's bot evolution during a game.
+- This history could be stored as a lightweight append-only log per game session — conceptually similar to a git repo per room, tracking code changes and game state over time.
+- Replay playback would re-feed recorded spectator states into the game's `SpectatorRenderer` component at the original tick rate.
+
+**What this means for MVP development:**
+- The game engine should structure its loop so that state transitions are observable (event emitter or similar), even if nothing is recording them yet.
+- Code submissions should pass through a single codepath that could easily be wrapped with logging.
+- Avoid designs that make game state reconstruction impossible (e.g. relying on non-deterministic sandbox side effects).
+
+## Sound
+
+Sound is a per-game-module concern. Each game module may optionally provide:
+- **Sound effect triggers:** A function that compares previous and new game state and returns a list of sound events (e.g. "explosion", "card_dealt", "unit_died"). The spectator display plays corresponding audio.
+- **Background music:** A game may specify a music track to loop during play.
+- **Assets:** Sound files are bundled with the game module package.
+
+The spectator display provides a global mute toggle controlled by the host. Sound is off by default and must be enabled explicitly.
+
 ## Open Questions
 
-- **Spectator rendering:** Should each game module provide its own Pixi.js rendering code, or should it return a declarative scene description that a generic renderer interprets? The former is more flexible; the latter keeps game modules simpler.
-- **Player identity:** Should players create accounts, or is an ephemeral name + room code sufficient? For a party game context, ephemeral is probably fine.
-- **AI agent in web editor:** Should the web editor integrate an AI chat panel (calling an LLM API client-side), or is it strictly a manual code editor? Keeping it manual avoids API key management complexity.
-- **Replay system:** Should games be recorded for replay? Would add complexity but could be a great post-session feature.
-- **Sound:** Should the spectator display have sound effects and music? Adds atmosphere but adds asset and implementation scope.
+- **LLM provider for web editor:** Which LLM API should the web editor's AI chat use? Anthropic's Claude API is the natural choice given the MCP ecosystem, but should we support configurable providers?
+- **Rate limiting:** What are sensible rate limits for code submissions? Too aggressive hurts the iterative feedback loop; too lax risks abuse.
+- **Game module loading:** Should game modules be statically bundled, or dynamically loaded at runtime? Static is simpler; dynamic would allow third-party game development without rebuilding the server.
+- **Spectator display scaling:** How should the spectator view handle different screen sizes and aspect ratios on the big screen?
